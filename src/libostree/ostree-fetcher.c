@@ -53,9 +53,6 @@ typedef struct {
   GSimpleAsyncResult *result;
 } OstreeFetcherPendingURI;
 
-static void ostree_fetcher_pending_uri_done (OstreeFetcher *self,
-                                             OstreeFetcherPendingURI *pending);
-
 static void
 pending_uri_free (OstreeFetcherPendingURI *pending)
 {
@@ -63,9 +60,6 @@ pending_uri_free (OstreeFetcherPendingURI *pending)
   pending->refcount--;
   if (pending->refcount > 0)
     return;
-
-  if (!pending->is_stream)
-    ostree_fetcher_pending_uri_done (pending->self, pending);
 
   soup_uri_free (pending->uri);
   g_clear_object (&pending->self);
@@ -190,24 +184,6 @@ static void
 on_request_sent (GObject        *object, GAsyncResult   *result, gpointer        user_data);
 
 static void
-ostree_fetcher_pending_uri_done (OstreeFetcher *self,
-                                 OstreeFetcherPendingURI *pending)
-{
-  OstreeFetcherPendingURI *p;
-
-  g_assert (!pending->is_stream);
-
-  self->outstanding--;
-  p = g_queue_pop_head (&self->pending_queue);
-  if (p != NULL)
-    {
-      self->outstanding++;
-      soup_request_send_async (p->request, p->cancellable,
-                           on_request_sent, p);
-    }
-}
-
-static void
 ostree_fetcher_queue_pending_uri (OstreeFetcher *self,
                                   OstreeFetcherPendingURI *pending)
 {
@@ -233,6 +209,7 @@ on_splice_complete (GObject        *object,
                     gpointer        user_data) 
 {
   OstreeFetcherPendingURI *pending = user_data;
+  OstreeFetcherPendingURI *next;
   gs_unref_object GFileInfo *file_info = NULL;
   goffset filesize;
   GError *local_error = NULL;
@@ -243,6 +220,19 @@ on_splice_complete (GObject        *object,
                                  pending->cancellable, &local_error);
   if (!file_info)
     goto out;
+
+  /* Now that we've finished downloading, continue with other queued
+   * requests.
+   */
+  pending->self->outstanding--;
+  next = g_queue_pop_head (&pending->self->pending_queue);
+  while (next != NULL && pending->self->outstanding < pending->self->max_outstanding)
+    {
+      pending->self->outstanding++;
+      soup_request_send_async (next->request, next->cancellable,
+                               on_request_sent, next);
+      next = g_queue_pop_head (&pending->self->pending_queue);
+    }
 
   filesize = g_file_info_get_size (file_info);
   if (filesize < pending->content_length)
