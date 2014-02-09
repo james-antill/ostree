@@ -139,5 +139,14 @@ _ostree_repo_commit_modifier_apply (OstreeRepo               *self,
                                     GFileInfo                *file_info,
                                     GFileInfo               **out_modified_info);
 
+gboolean
+_ostree_repo_gpg_verify_file_with_metadata (OstreeRepo          *self,
+                                            GFile               *path,
+                                            GVariant            *metadata,
+                                            GFile               *keyringdir,
+                                            GFile               *extra_keyring,
+                                            GCancellable        *cancellable,
+                                            GError             **error);
+
 G_END_DECLS
 

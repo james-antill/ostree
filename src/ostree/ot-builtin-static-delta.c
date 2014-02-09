@@ -27,11 +27,15 @@
 static char *opt_from_rev;
 static char *opt_to_rev;
 static char *opt_apply;
+static char **opt_key_ids;
+static char *opt_gpg_homedir;
 
 static GOptionEntry options[] = {
   { "from", 0, 0, G_OPTION_ARG_STRING, &opt_from_rev, "Create delta from revision REV", "REV" },
   { "to", 0, 0, G_OPTION_ARG_STRING, &opt_to_rev, "Create delta to revision REV", "REV" },
   { "apply", 0, 0, G_OPTION_ARG_FILENAME, &opt_apply, "Apply delta from PATH", "PATH" },
+  { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_key_ids, "GPG Key ID to sign the delta with", "key-id"},
+  { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, "GPG Homedir to use when looking for keyrings", "homedir"},
   { NULL }
 };
 
@@ -113,6 +117,24 @@ ostree_builtin_static_delta (int argc, char **argv, OstreeRepo *repo, GCancellab
                                                   from_resolved, to_resolved, NULL,
                                                   cancellable, error))
             goto out;
+
+          if (opt_key_ids)
+            {
+              char **iter;
+
+              for (iter = opt_key_ids; iter && *iter; iter++)
+                {
+                  const char *keyid = *iter;
+
+                  if (!ostree_repo_sign_delta (repo,
+                                               from_resolved, to_resolved,
+                                               keyid,
+                                               opt_gpg_homedir,
+                                               cancellable,
+                                               error))
+                    goto out;
+                }
+            }
         }
       else
         {

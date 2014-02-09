@@ -1724,7 +1724,7 @@ out:
 #endif
 }
 
-static gboolean
+gboolean
 _ostree_repo_gpg_verify_file_with_metadata (OstreeRepo          *self,
                                             GFile               *path,
                                             GVariant            *metadata,
