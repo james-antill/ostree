@@ -38,6 +38,8 @@ typedef struct {
 
 typedef struct {
   GPtrArray *parts;
+  GPtrArray *fallback_objects;
+  guint64 loose_compressed_size;
 } OstreeStaticDeltaBuilder;
 
 static void
@@ -148,6 +150,8 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
 
       g_hash_table_insert (new_reachable_objects, g_variant_ref (serialized_key), serialized_key);
     }
+  
+  g_printerr ("%u new reachable objects\n", g_hash_table_size (new_reachable_objects));
 
   current_part = allocate_part (builder);
 
@@ -162,6 +166,7 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
       gs_unref_object GInputStream *content_stream = NULL;
       gsize bytes_read;
       const guint readlen = 4096;
+      guint64 compressed_size;
 
       ostree_object_name_deserialize (serialized_key, &checksum, &objtype);
 
@@ -170,7 +175,18 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
                                            cancellable, error))
         goto out;
 
-      current_part->uncompressed_size += content_size;
+      /* Fall back to plain HTTP-based fetch for large objects;
+       * in the future we should try an rsync-style rolling checksum
+       * against a previous version, if any.
+       */
+      if (content_size > OSTREE_STATIC_DELTA_PART_MAX_SIZE_BYTES)
+        {
+          g_printerr ("fallback for %s\n",
+                      ostree_object_to_string (checksum, objtype));
+          g_ptr_array_add (builder->fallback_objects, 
+                           ostree_object_name_serialize (checksum, objtype));
+          continue;
+        }
 
       /* Ensure we have at least one object per delta, even if a given
        * object is larger.
@@ -180,6 +196,14 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
         {
           current_part = allocate_part (builder);
         } 
+
+      if (!ostree_repo_query_object_storage_size (repo, objtype, checksum,
+                                                  &compressed_size,
+                                                  cancellable, error))
+        goto out;
+      builder->loose_compressed_size += compressed_size;
+
+      current_part->uncompressed_size += content_size;
 
       g_ptr_array_add (current_part->objects, g_variant_ref (serialized_key));
 
@@ -213,11 +237,75 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
       g_string_append_c (current_part->operations, (gchar)OSTREE_STATIC_DELTA_OP_WRITE);
       _ostree_write_varuint64 (current_part->operations, object_payload_start);
       _ostree_write_varuint64 (current_part->operations, content_size);
-      g_printerr ("write %" G_GUINT64_FORMAT " %" G_GUINT64_FORMAT "\n", (guint64) object_payload_start, (guint64)(content_size));
       g_string_append_c (current_part->operations, (gchar)OSTREE_STATIC_DELTA_OP_CLOSE);
     }
 
   ret = TRUE;
+ out:
+  return ret;
+}
+
+static gboolean
+get_fallback_headers (OstreeRepo               *self,
+                      OstreeStaticDeltaBuilder *builder,
+                      GVariant                **out_headers,
+                      GCancellable             *cancellable,
+                      GError                  **error)
+{
+  gboolean ret = FALSE;
+  guint i;
+  gs_unref_variant GVariant *ret_headers = NULL;
+  gs_unref_variant_builder GVariantBuilder *fallback_builder = NULL;
+
+  fallback_builder = g_variant_builder_new (G_VARIANT_TYPE ("a" OSTREE_STATIC_DELTA_FALLBACK_FORMAT));
+
+  for (i = 0; i < builder->fallback_objects->len; i++)
+    {
+      GVariant *serialized = builder->fallback_objects->pdata[i];
+      const char *checksum;
+      OstreeObjectType objtype;
+      guint64 compressed_size;
+      guint64 uncompressed_size;
+
+      ostree_object_name_deserialize (serialized, &checksum, &objtype);
+
+      if (OSTREE_OBJECT_TYPE_IS_META (objtype))
+        {
+          if (!ostree_repo_load_object_stream (self, objtype, checksum,
+                                               NULL, &uncompressed_size,
+                                               cancellable, error))
+            goto out;
+          compressed_size = uncompressed_size;
+        }
+      else
+        {
+          gs_unref_object GFileInfo *file_info = NULL;
+
+          if (!ostree_repo_query_object_storage_size (self, OSTREE_OBJECT_TYPE_FILE,
+                                                      checksum,
+                                                      &compressed_size,
+                                                      cancellable, error))
+            goto out;
+
+          if (!ostree_repo_load_file (self, checksum,
+                                      NULL, &file_info, NULL,
+                                      cancellable, error))
+            goto out;
+
+          uncompressed_size = g_file_info_get_size (file_info);
+        }
+
+      g_variant_builder_add_value (fallback_builder,
+                                   g_variant_new ("(y@aytt)",
+                                                  objtype,
+                                                  ostree_checksum_to_bytes_v (checksum),
+                                                  compressed_size, uncompressed_size));
+    }
+
+  ret_headers = g_variant_ref_sink (g_variant_builder_end (fallback_builder));
+
+  ret = TRUE;
+  gs_transfer_out_value (out_headers, &ret_headers);
  out:
   return ret;
 }
@@ -250,6 +338,8 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
   OstreeStaticDeltaBuilder builder = { 0, };
   guint i;
   GVariant *metadata_source;
+  guint64 total_compressed_size = 0;
+  guint64 total_uncompressed_size = 0;
   gs_unref_variant_builder GVariantBuilder *part_headers = NULL;
   gs_unref_ptrarray GPtrArray *part_tempfiles = NULL;
   gs_unref_variant GVariant *delta_descriptor = NULL;
@@ -257,8 +347,10 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
   gs_unref_object GFile *descriptor_path = NULL;
   gs_unref_object GFile *descriptor_dir = NULL;
   gs_unref_variant GVariant *tmp_metadata = NULL;
+  gs_unref_variant GVariant *fallback_headers = NULL;
 
   builder.parts = g_ptr_array_new_with_free_func ((GDestroyNotify)ostree_static_delta_part_builder_unref);
+  builder.fallback_objects = g_ptr_array_new_with_free_func ((GDestroyNotify)g_variant_unref);
 
   /* Ignore optimization flags */
   if (!generate_delta_lowlatency (self, from, to, &builder,
@@ -333,6 +425,14 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
                                          ot_gvariant_new_ay_bytes (objtype_checksum_array));
       g_variant_builder_add_value (part_headers, g_variant_ref (delta_part_header));
       g_ptr_array_add (part_tempfiles, g_object_ref (part_tempfile));
+      
+      total_compressed_size += g_variant_get_size (delta_part);
+      total_uncompressed_size += part_builder->uncompressed_size;
+
+      g_printerr ("part %u n:%u compressed:%" G_GUINT64_FORMAT " uncompressed:%" G_GUINT64_FORMAT "\n",
+                  i, part_builder->objects->len,
+                  g_variant_get_size (delta_part),
+                  part_builder->uncompressed_size);
     }
 
   descriptor_relpath = _ostree_get_relative_static_delta_path (from, to);
@@ -365,15 +465,25 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
       metadata_source = tmp_metadata;
     }
 
+  if (!get_fallback_headers (self, &builder, &fallback_headers,
+                             cancellable, error))
+    goto out;
+
   {
     GDateTime *now = g_date_time_new_now_utc ();
-    delta_descriptor = g_variant_new ("(@(a(ss)a(say))taya" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT ")",
+    delta_descriptor = g_variant_new ("(@(a(ss)a(say))tay"
+                                      "a" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT
+                                      "@a" OSTREE_STATIC_DELTA_FALLBACK_FORMAT ")",
                                       metadata_source,
                                       GUINT64_TO_BE (g_date_time_to_unix (now)),
                                       g_variant_builder_new (G_VARIANT_TYPE ("ay")),
-                                      part_headers);
+                                      part_headers,
+                                      fallback_headers);
     g_date_time_unref (now);
   }
+
+  g_printerr ("delta compressed=%" G_GUINT64_FORMAT " loose=%" G_GUINT64_FORMAT "\n",
+              total_compressed_size, builder.loose_compressed_size);
 
   if (!ot_util_variant_save (descriptor_path, delta_descriptor, cancellable, error))
     goto out;
@@ -381,5 +491,6 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
   ret = TRUE;
  out:
   g_clear_pointer (&builder.parts, g_ptr_array_unref);
+  g_clear_pointer (&builder.fallback_objects, g_ptr_array_unref);
   return ret;
 }
