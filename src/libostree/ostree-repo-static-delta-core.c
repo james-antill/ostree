@@ -211,7 +211,7 @@ ostree_repo_static_delta_execute_offline (OstreeRepo                    *self,
   gs_unref_variant GVariant *meta = NULL;
   gs_unref_variant GVariant *headers = NULL;
 
-  if (!ot_util_variant_map (meta_file, G_VARIANT_TYPE (OSTREE_STATIC_DELTA_META_FORMAT),
+  if (!ot_util_variant_map (meta_file, G_VARIANT_TYPE (OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT),
                             FALSE, &meta, error))
     goto out;
 

@@ -1325,6 +1325,13 @@ char *
 _ostree_get_relative_static_delta_path (const char        *from,
                                         const char        *to)
 {
+  return g_strdup_printf ("deltas/%s-%s/superblock", from, to);
+}
+
+char *
+_ostree_get_relative_static_delta_detachedmeta_path (const char        *from,
+                                                     const char        *to)
+{
   return g_strdup_printf ("deltas/%s-%s/meta", from, to);
 }
 

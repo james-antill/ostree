@@ -97,6 +97,10 @@ _ostree_get_relative_static_delta_path (const char        *from,
                                         const char        *to);
 
 char *
+_ostree_get_relative_static_delta_detachedmeta_path (const char        *from,
+                                                     const char        *to);
+
+char *
 _ostree_get_relative_static_delta_part_path (const char        *from,
                                              const char        *to,
                                              guint              i);

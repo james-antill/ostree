@@ -52,7 +52,7 @@ G_BEGIN_DECLS
 #define OSTREE_STATIC_DELTA_META_ENTRY_FORMAT "(ayttay)"
 
 /**
- * OSTREE_STATIC_DELTA_META_FORMAT:
+ * OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT:
  *
  * A .delta object is a custom binary format.  It has the following high
  * level form:
@@ -71,7 +71,7 @@ G_BEGIN_DECLS
  * recursion mechanism that would potentially allow saving significant
  * storage space on the server.
  */ 
-#define OSTREE_STATIC_DELTA_META_FORMAT "(a{sv}taya" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT ")"
+#define OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT "(a{sv}taya" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT ")"
 
 gboolean _ostree_static_delta_part_execute (OstreeRepo      *repo,
                                             GVariant        *header,
