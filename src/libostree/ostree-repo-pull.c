@@ -81,6 +81,11 @@ typedef struct {
   gboolean     is_detached_meta;
 } FetchObjectData;
 
+typedef struct {
+  OtPullData  *pull_data;
+  char *expected_checksum;
+} FetchStaticDeltaData;
+
 static SoupURI *
 suburi_new (SoupURI   *base,
             const char *first,
