@@ -60,6 +60,8 @@ typedef struct {
   guint             n_outstanding_metadata_write_requests;
   guint             n_outstanding_content_fetches;
   guint             n_outstanding_content_write_requests;
+  guint             n_outstanding_deltapart_fetches;
+  guint             n_outstanding_deltapart_write_requests;
   gint              n_requested_metadata;
   gint              n_requested_content;
   guint             n_fetched_metadata;
@@ -136,9 +138,11 @@ update_progress (gpointer user_data)
 {
   OtPullData *pull_data = user_data;
   guint outstanding_writes = pull_data->n_outstanding_content_write_requests +
-    pull_data->n_outstanding_metadata_write_requests;
+    pull_data->n_outstanding_metadata_write_requests +
+    pull_data->n_outstanding_deltapart_write_requests;
   guint outstanding_fetches = pull_data->n_outstanding_content_fetches +
-    pull_data->n_outstanding_metadata_fetches;
+    pull_data->n_outstanding_metadata_fetches +
+    pull_data->n_outstanding_deltapart_fetches;
   guint64 bytes_transferred = ostree_fetcher_bytes_transferred (pull_data->fetcher);
   guint fetched = pull_data->n_fetched_metadata + pull_data->n_fetched_content;
   guint requested = pull_data->n_requested_metadata + pull_data->n_requested_content;
@@ -189,9 +193,11 @@ check_outstanding_requests_handle_error (OtPullData          *pull_data,
                                          GError              *error)
 {
   gboolean current_fetch_idle = (pull_data->n_outstanding_metadata_fetches == 0 &&
-                                 pull_data->n_outstanding_content_fetches == 0);
+                                 pull_data->n_outstanding_content_fetches == 0 &&
+                                 pull_data->n_outstanding_deltapart_fetches == 0);
   gboolean current_write_idle = (pull_data->n_outstanding_metadata_write_requests == 0 &&
-                                 pull_data->n_outstanding_content_write_requests == 0);
+                                 pull_data->n_outstanding_content_write_requests == 0 &&
+                                 pull_data->n_outstanding_deltapart_write_requests == 0 );
   gboolean current_idle = current_fetch_idle && current_write_idle;
 
   throw_async_error (pull_data, error);
@@ -1086,6 +1092,9 @@ process_one_static_delta (OtPullData   *pull_data,
     {
       const guchar *csum;
       gs_unref_variant GVariant *header = NULL;
+      gboolean have_all = FALSE;
+      SoupURI *target_uri = NULL;
+      gs_free char *deltapart_path = NULL;
 
       header = g_variant_get_child_value (headers, i);
       g_variant_get (header, "(@aytt@ay)", &csum_v, &size, &usize, &objects);
@@ -1094,7 +1103,29 @@ process_one_static_delta (OtPullData   *pull_data,
       if (!csum)
         goto out;
 
-      part_path = ot_gfile_resolve_path_printf (dir, "%u", i);
+      if (!_ostree_repo_static_delta_part_have_all_objects (self,
+                                                            objects,
+                                                            &have_all,
+                                                            cancellable, error))
+        goto out;
+
+      if (have_all)
+        {
+          g_debug ("Have all objects from static delta %s-%s part %u",
+                   from_revision, to_revision,
+                   i);
+          continue;
+        }
+
+      deltapart_path = _ostree_get_relative_static_delta_part_path (from_revision,
+                                                                    to_revision,
+                                                                    i);
+
+      target_uri = suburi_new (pull_data->base_uri, deltapart_path, NULL);
+      ostree_fetcher_request_uri_with_partial_async (pull_data->fetcher, target_uri, pull_data->cancellable,
+                                                     static_deltapart_fetch_on_complete,
+                                                     pull_data);
+      soup_uri_free (obj_uri);
     }
 }
 

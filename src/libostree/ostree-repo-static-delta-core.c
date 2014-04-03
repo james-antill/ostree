@@ -115,12 +115,12 @@ ostree_repo_list_static_delta_names (OstreeRepo                  *self,
   return ret;
 }
 
-static gboolean
-have_all_objects (OstreeRepo             *repo,
-                  GVariant               *checksum_array,
-                  gboolean               *out_have_all,
-                  GCancellable           *cancellable,
-                  GError                **error)
+gboolean
+_ostree_repo_static_delta_part_have_all_objects (OstreeRepo             *repo,
+                                                 GVariant               *checksum_array,
+                                                 gboolean               *out_have_all,
+                                                 GCancellable           *cancellable,
+                                                 GError                **error)
 {
   gboolean ret = FALSE;
   guint8 *checksums_data;
@@ -234,7 +234,8 @@ ostree_repo_static_delta_execute_offline (OstreeRepo                    *self,
       header = g_variant_get_child_value (headers, i);
       g_variant_get (header, "(@aytt@ay)", &csum_v, &size, &usize, &objects);
 
-      if (!have_all_objects (self, objects, &have_all, cancellable, error))
+      if (!_ostree_repo_static_delta_part_have_all_objects (self, objects, &have_all,
+                                                            cancellable, error))
         goto out;
 
       /* If we already have these objects, don't bother executing the

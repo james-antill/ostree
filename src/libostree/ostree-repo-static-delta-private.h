@@ -93,5 +93,12 @@ _ostree_static_delta_parse_checksum_array (GVariant      *array,
                                            guint8       **out_checksums_array,
                                            guint         *out_n_checksums,
                                            GError       **error);
+
+gboolean
+_ostree_repo_static_delta_part_have_all_objects (OstreeRepo             *repo,
+                                                 GVariant               *checksum_array,
+                                                 gboolean               *out_have_all,
+                                                 GCancellable           *cancellable,
+                                                 GError                **error);
 G_END_DECLS
 
