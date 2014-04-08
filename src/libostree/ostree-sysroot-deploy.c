@@ -78,6 +78,7 @@ copy_modified_config_file (GFile              *orig_etc,
 
   if (g_file_info_get_file_type (src_info) == G_FILE_TYPE_DIRECTORY)
     {
+      /* FIXME: fsync here */
       if (!gs_shutil_cp_a (src, dest, cancellable, error))
         goto out;
     }
