@@ -84,6 +84,7 @@ typedef struct {
 
 typedef struct {
   OtPullData  *pull_data;
+  GVariant *objects;
   char *expected_checksum;
 } FetchStaticDeltaData;
 
@@ -707,6 +708,36 @@ meta_fetch_on_complete (GObject           *object,
 }
 
 static void
+fetch_static_delta_data_free (gpointer  data)
+{
+  FetchStaticDeltaData *fetch_data = data;
+  g_free (fetch_data->expected_checksum);
+  g_variant_unref (fetch_data->headers);
+  g_free (fetch_data);
+}
+
+static void
+on_static_delta_written (GObject           *object,
+                         GAsyncResult      *result,
+                         gpointer           user_data)
+{
+  FetchStaticDeltaData *fetch_data = user_data;
+  OtPullData *pull_data = fetch_data->pull_data;
+  GError *local_error = NULL;
+  GError **error = &local_error;
+
+
+ out:
+  g_assert (pull_data->n_outstanding_deltapart_fetches > 0);
+  pull_data->n_outstanding_deltapart_fetches--;
+  pull_data->n_fetched_deltaparts++;
+  pull_data->n_outstanding_deltapart_write_requests++;
+  throw_async_error (pull_data, local_error);
+  if (local_error)
+    fetch_static_delta_data_free (fetch_data);
+}
+
+static void
 static_deltapart_fetch_on_complete (GObject           *object,
                                     GAsyncResult      *result,
                                     gpointer           user_data)
@@ -715,7 +746,8 @@ static_deltapart_fetch_on_complete (GObject           *object,
   OtPullData *pull_data = fetch_data->pull_data;
   gs_unref_variant GVariant *metadata = NULL;
   gs_unref_object GFile *temp_path = NULL;
-  const char *checksum;
+  gs_unref_object GInputStream *in = NULL;
+  gs_free char *actual_checksum = NULL;
   OstreeObjectType objtype;
   GError *local_error = NULL;
   GError **error = &local_error;
@@ -725,18 +757,50 @@ static_deltapart_fetch_on_complete (GObject           *object,
   temp_path = ostree_fetcher_request_uri_with_partial_finish ((OstreeFetcher*)object, result, error);
   if (!temp_path)
     goto out;
+
+  in = g_file_read (temp_path, cancellable, error);
+  if (!in)
+    goto out;
   
+  /* TODO - consider making async */
+  if (!ot_gio_checksum_stream (in, &csum, cancellable, error))
+    goto out;
+
+  actual_checksum = ostree_checksum_from_bytes (csum);
+
+  if (strcmp (checksum, fetch_data->expected_checksum) != 0)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Corrupted static delta part; checksum expected='%s' actual='%s'",
+                   fetch_data->expected_checksum, checksum);
+      goto out;
+    }
+
+  /* Might as well close the fd here */
+  (void) g_input_stream_close (in, NULL, NULL);
+
+  {
+    gs_unref_bytes GBytes *delta_data
+      = gs_file_map_readonly (temp_path, cancellable, error);
+    if (!delta_data)
+      goto out;
+
+    _ostree_static_delta_part_execute_async (pull_data->repo,
+                                             fetch_data->objects,
+                                             delta_data,
+                                             cancellable,
+                                             on_static_delta_written,
+                                             fetch_data);
+  }
 
  out:
   g_assert (pull_data->n_outstanding_deltapart_fetches > 0);
   pull_data->n_outstanding_deltapart_fetches--;
   pull_data->n_fetched_deltaparts++;
+  pull_data->n_outstanding_deltapart_write_requests++;
   throw_async_error (pull_data, local_error);
   if (local_error)
-    {
-      g_free (fetch_data->expected_checksum);
-      g_free (fetch_data);
-    }
+    fetch_static_delta_data_free (fetch_data);
 }
 
 static gboolean
@@ -1161,6 +1225,7 @@ process_one_static_delta (OtPullData   *pull_data,
 
       fetch_data = g_new0 (FetchStaticDeltaData, 1);
       fetch_data->pull_data = pull_data;
+      fetch_data->objects = g_variant_ref (objects);
       fetch_data->expected_checksum = ostree_checksum_from_bytes_v (csum_v);
 
       target_uri = suburi_new (pull_data->base_uri, deltapart_path, NULL);

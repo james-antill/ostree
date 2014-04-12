@@ -32,6 +32,8 @@ G_BEGIN_DECLS
 /**
  * OSTREE_STATIC_DELTA_PART_PAYLOAD_FORMAT:
  *
+ *   y  compression type (0: none, 'z': zlib)
+ *   ---
  *   ay data source
  *   ay operations
  */
@@ -73,11 +75,35 @@ G_BEGIN_DECLS
  */ 
 #define OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT "(a{sv}taya" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT ")"
 
+gboolean _ostree_static_delta_part_validate (OstreeRepo     *repo,
+                                             GFile          *part_path,
+                                             guint           part_offset,
+                                             const char     *expected_checksum,
+                                             GCancellable   *cancellable,
+                                             GError        **error);
+
 gboolean _ostree_static_delta_part_execute (OstreeRepo      *repo,
                                             GVariant        *header,
-                                            GVariant        *part,
+                                            GBytes          *partdata,
                                             GCancellable    *cancellable,
                                             GError         **error);
+
+gboolean _ostree_static_delta_part_execute_raw (OstreeRepo      *repo,
+                                                GVariant        *header,
+                                                GVariant        *part,
+                                                GCancellable    *cancellable,
+                                                GError         **error);
+
+void _ostree_static_delta_part_execute_async (OstreeRepo      *repo,
+                                              GVariant        *header,
+                                              GBytes          *partdata,
+                                              GCancellable    *cancellable,
+                                              GAsyncReadyCallback  callback,
+                                              gpointer         user_data);
+
+gboolean _ostree_static_delta_part_execute_finish (OstreeRepo      *repo,
+                                                   GAsyncResult    *result,
+                                                   GError         **error); 
 
 typedef enum {
   OSTREE_STATIC_DELTA_OP_FETCH = 1,

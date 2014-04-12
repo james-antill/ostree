@@ -110,13 +110,47 @@ open_output_target_csum (OstreeRepo                  *repo,
   return ret;
 }
 
+gboolean
+_ostree_static_delta_part_validate (OstreeRepo     *repo,
+                                    GFile          *part_path,
+                                    guint           part_offset,
+                                    const char     *expected_checksum,
+                                    GCancellable   *cancellable,
+                                    GError        **error)
+{
+  gboolean ret = FALSE;
+  gs_unref_object GInputStream *tmp_in = NULL;
+  gs_free guchar *actual_checksum_bytes = NULL;
+  gs_free gchar *actual_checksum = NULL;
+  
+  tmp_in = (GInputStream*)g_file_read (part_path, cancellable, error);
+  if (!tmp_in)
+    goto out;
+  
+  if (!ot_gio_checksum_stream (tmp_in, &actual_checksum_bytes,
+                               cancellable, error))
+    goto out;
+
+  actual_checksum = ostree_checksum_from_bytes (actual_checksum_bytes);
+  if (strcmp (actual_checksum, expected_checksum) != 0)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Checksum mismatch in static delta part %u; expected=%s actual=%s",
+                   part_offset, expected_checksum, actual_checksum);
+      goto out;
+    }
+  
+  ret = TRUE;
+ out:
+  return ret;
+}
 
 gboolean
-_ostree_static_delta_part_execute (OstreeRepo      *repo,
-                                   GVariant        *objects,
-                                   GVariant        *part,
-                                   GCancellable    *cancellable,
-                                   GError         **error)
+_ostree_static_delta_part_execute_raw (OstreeRepo      *repo,
+                                       GVariant        *objects,
+                                       GVariant        *part,
+                                       GCancellable    *cancellable,
+                                       GError         **error)
 {
   gboolean ret = FALSE;
   guint8 *checksums_data;
@@ -169,6 +203,167 @@ _ostree_static_delta_part_execute (OstreeRepo      *repo,
   ret = TRUE;
  out:
   return ret;
+}
+
+static gboolean
+zlib_uncompress_data (GBytes       *data,
+                      GBytes      **out_uncompressed,
+                      GCancellable *cancellable,
+                      GError      **error)
+{
+  gboolean ret = FALSE;
+  gs_unref_object GMemoryInputStream *memin = (GMemoryInputStream*)g_memory_input_stream_new_from_bytes (data);
+  gs_unref_object GMemoryOutputStream *memout = (GMemoryOutputStream*)g_memory_output_stream_new (NULL, 0, g_realloc, g_free);
+  gs_unref_object GConverter *zlib_decomp =
+    (GConverter*) g_zlib_decompressor_new (G_ZLIB_COMPRESSOR_FORMAT_RAW);
+  gs_unref_object GInputStream *convin = g_converter_input_stream_new ((GInputStream*)memin, zlib_decomp);
+
+  if (0 > g_output_stream_splice ((GOutputStream*)memout, convin,
+                                  G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE |
+                                  G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET,
+                                  cancellable, error))
+    goto out;
+
+  ret = TRUE;
+  *out_uncompressed = g_memory_output_stream_steal_as_bytes (memout);
+ out:
+  return ret;
+}
+
+gboolean
+_ostree_static_delta_part_execute (OstreeRepo      *repo,
+                                   GVariant        *header,
+                                   GBytes          *part_bytes,
+                                   GCancellable    *cancellable,
+                                   GError         **error)
+{
+  gboolean ret = FALSE;
+  gsize partlen;
+  const guint8*partdata;
+  gs_unref_variant GVariant *part = NULL;
+  gs_unref_bytes GBytes *part_payload_bytes = NULL;
+  gs_unref_bytes GBytes *payload_data = NULL;
+  gs_unref_variant GVariant *payload = NULL;
+  guint8 comptype;
+
+  partdata = g_bytes_get_data (part_bytes, &partlen);
+  
+  if (partlen < 1)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Corrupted 0 length delta part");
+      goto out;
+    }
+        
+  /* First byte is compression type */
+  comptype = partdata[0];
+  /* Then the rest may be compressed or uncompressed */
+  part_payload_bytes = g_bytes_new_from_bytes (part_bytes, 1, partlen - 1);
+  switch (comptype)
+    {
+    case 0:
+      /* No compression */
+      payload_data = g_bytes_ref (part_payload_bytes);
+      break;
+    case 'g':
+      {
+        if (!zlib_uncompress_data (part_payload_bytes, &payload_data,
+                                   cancellable, error))
+          goto out;
+      }
+      break;
+    default:
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Invalid compression type '%u'", comptype);
+      goto out;
+    }
+        
+  payload = ot_variant_new_from_bytes (G_VARIANT_TYPE (OSTREE_STATIC_DELTA_PART_PAYLOAD_FORMAT),
+                                       payload_data, FALSE);
+  if (!_ostree_static_delta_part_execute_raw (repo, header, part,
+                                              cancellable, error))
+    goto out;
+  
+  ret = TRUE;
+ out:
+  return ret;
+}
+
+typedef struct {
+  OstreeRepo *repo;
+  GVariant *header;
+  GBytes *partdata;
+  GCancellable *cancellable;
+  GAsyncResult *result;
+} StaticDeltaPartExecuteAsyncData;
+
+static void
+static_delta_part_execute_async_data_free (gpointer user_data)
+{
+  StaticDeltaPartExecuteAsyncData *data = user_data;
+
+  g_clear_object (&data->repo);
+  g_variant_unref (data->header);
+  g_bytes_unref (data->partdata);
+  g_clear_object (&data->cancellable);
+  g_free (data);
+}
+
+static void
+static_delta_part_execute_thread (GSimpleAsyncResult  *res,
+                                  GObject             *object,
+                                  GCancellable        *cancellable)
+{
+  GError *error = NULL;
+  StaticDeltaPartExecuteAsyncData *data;
+
+  data = g_simple_async_result_get_op_res_gpointer (res);
+  if (!_ostree_static_delta_part_execute (data->repo,
+                                          data->header,
+                                          data->partdata,
+                                          cancellable, &error))
+    g_simple_async_result_take_error (res, error);
+}
+
+void
+_ostree_static_delta_part_execute_async (OstreeRepo      *repo,
+                                         GVariant        *header,
+                                         GBytes          *partdata,
+                                         GCancellable    *cancellable,
+                                         GAsyncReadyCallback  callback,
+                                         gpointer         user_data)
+{
+  StaticDeltaPartExecuteAsyncData *asyncdata;
+
+  asyncdata = g_new0 (StaticDeltaPartExecuteAsyncData, 1);
+  asyncdata->repo = g_object_ref (repo);
+  asyncdata->header = g_variant_ref (header);
+  asyncdata->partdata = g_bytes_ref (partdata);
+  asyncdata->cancellable = cancellable ? g_object_ref (cancellable) : NULL;
+
+  asyncdata->result = g_simple_async_result_new ((GObject*) self,
+                                                 callback, user_data,
+                                                 _ostree_static_delta_part_execute_async);
+
+  g_simple_async_result_set_op_res_gpointer (asyncdata->result, asyncdata,
+                                             static_delta_part_execute_async_data_free);
+  g_simple_async_result_run_in_thread (asyncdata->result, static_delta_part_execute_thread, G_PRIORITY_DEFAULT, cancellable);
+  g_object_unref (asyncdata->result);
+}
+
+gboolean
+_ostree_static_delta_part_execute_finish (OstreeRepo      *repo,
+                                          GAsyncResult    *result,
+                                          GError         **error) 
+{
+  GSimpleAsyncResult *simple = G_SIMPLE_ASYNC_RESULT (result);
+  StaticDeltaPartExecuteAsyncData *asyncdata;
+
+  g_warn_if_fail (g_simple_async_result_get_source_tag (simple) == _ostree_static_delta_part_execute_async);
+
+  if (g_simple_async_result_propagate_error (simple, error))
+    return FALSE;
+  return TRUE;
 }
 
 static gboolean
