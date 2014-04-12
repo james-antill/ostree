@@ -712,7 +712,7 @@ fetch_static_delta_data_free (gpointer  data)
 {
   FetchStaticDeltaData *fetch_data = data;
   g_free (fetch_data->expected_checksum);
-  g_variant_unref (fetch_data->headers);
+  g_variant_unref (fetch_data->objects);
   g_free (fetch_data);
 }
 
@@ -726,12 +726,12 @@ on_static_delta_written (GObject           *object,
   GError *local_error = NULL;
   GError **error = &local_error;
 
+  if (8
+
 
  out:
   g_assert (pull_data->n_outstanding_deltapart_fetches > 0);
-  pull_data->n_outstanding_deltapart_fetches--;
-  pull_data->n_fetched_deltaparts++;
-  pull_data->n_outstanding_deltapart_write_requests++;
+  pull_data->n_outstanding_deltapart_write_requests--;
   throw_async_error (pull_data, local_error);
   if (local_error)
     fetch_static_delta_data_free (fetch_data);

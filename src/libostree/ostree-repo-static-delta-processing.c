@@ -294,7 +294,7 @@ typedef struct {
   GVariant *header;
   GBytes *partdata;
   GCancellable *cancellable;
-  GAsyncResult *result;
+  GSimpleAsyncResult *result;
 } StaticDeltaPartExecuteAsyncData;
 
 static void
@@ -341,7 +341,7 @@ _ostree_static_delta_part_execute_async (OstreeRepo      *repo,
   asyncdata->partdata = g_bytes_ref (partdata);
   asyncdata->cancellable = cancellable ? g_object_ref (cancellable) : NULL;
 
-  asyncdata->result = g_simple_async_result_new ((GObject*) self,
+  asyncdata->result = g_simple_async_result_new ((GObject*) repo,
                                                  callback, user_data,
                                                  _ostree_static_delta_part_execute_async);
 
@@ -357,7 +357,6 @@ _ostree_static_delta_part_execute_finish (OstreeRepo      *repo,
                                           GError         **error) 
 {
   GSimpleAsyncResult *simple = G_SIMPLE_ASYNC_RESULT (result);
-  StaticDeltaPartExecuteAsyncData *asyncdata;
 
   g_warn_if_fail (g_simple_async_result_get_source_tag (simple) == _ostree_static_delta_part_execute_async);
 
