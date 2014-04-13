@@ -1770,3 +1770,28 @@ ostree_commit_get_timestamp (GVariant  *commit_variant)
   g_variant_get_child (commit_variant, 5, "t", &ret);
   return GUINT64_FROM_BE (ret);
 }
+
+GVariant *
+_ostree_detached_metadata_append_gpg_sig (GVariant   *existing_metadata,
+                                          GBytes     *signature_bytes)
+{
+  if (existing_metadata)
+    {
+      builder = ot_util_variant_builder_from_variant (existing_metadata, G_VARIANT_TYPE ("a{sv}"));
+      signaturedata = g_variant_lookup_value (existing_metadata, "ostree.gpgsigs", G_VARIANT_TYPE ("aay"));
+      if (signaturedata)
+        signature_builder = ot_util_variant_builder_from_variant (signaturedata, G_VARIANT_TYPE ("aay"));
+    }
+  if (!builder)
+    builder = g_variant_builder_new (G_VARIANT_TYPE ("a{sv}"));
+  if (!signature_builder)
+    signature_builder = g_variant_builder_new (G_VARIANT_TYPE ("aay"));
+
+  g_variant_builder_add (signature_builder, "@ay", ot_gvariant_new_ay_bytes (signature_bytes));
+
+  g_variant_builder_add (builder, "{sv}", "ostree.gpgsigs", g_variant_builder_end (signature_builder));
+  
+  metadata = g_variant_builder_end (builder);
+  return g_variant_ref_sink (metadata);
+}
+

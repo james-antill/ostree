@@ -118,5 +118,9 @@ _ostree_loose_path_with_suffix (char              *buf,
                                 OstreeRepoMode     repo_mode,
                                 const char        *suffix);
 
+GVariant *
+_ostree_detached_metadata_append_gpg_sig (GVariant   *existing_metadata,
+                                          GBytes     *signature_bytes);
+
 G_END_DECLS
 

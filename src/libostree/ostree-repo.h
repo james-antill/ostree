@@ -521,6 +521,14 @@ gboolean ostree_repo_sign_commit (OstreeRepo     *self,
                                   GCancellable   *cancellable,
                                   GError        **error);
 
+gboolean ostree_repo_sign_delta (OstreeRepo     *self,
+                                 const gchar    *from_commit,
+                                 const gchar    *to_commit,
+                                 const gchar    *key_id,
+                                 const gchar    *homedir,
+                                 GCancellable   *cancellable,
+                                 GError        **error);
+
 gboolean ostree_repo_append_gpg_signature (OstreeRepo     *self,
                                            const gchar    *commit_checksum,
                                            GBytes         *signature_bytes,
