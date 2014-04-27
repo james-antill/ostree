@@ -24,6 +24,7 @@
 
 #include "ostree-core-private.h"
 #include "ostree-repo-private.h"
+#include "ostree-lzma-compressor.h"
 #include "ostree-repo-static-delta-private.h"
 #include "ostree-diff.h"
 #include "otutil.h"
@@ -151,7 +152,9 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
       g_hash_table_insert (new_reachable_objects, g_variant_ref (serialized_key), serialized_key);
     }
   
-  g_printerr ("%u new reachable objects\n", g_hash_table_size (new_reachable_objects));
+  g_printerr ("modified: %u removed: %u added: %u; total %u new reachable objects\n",
+              modified->len, removed->len, added->len, 
+              g_hash_table_size (new_reachable_objects));
 
   current_part = allocate_part (builder);
 
@@ -374,7 +377,7 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
       gs_unref_object GInputStream *part_payload_in = NULL;
       gs_unref_object GMemoryOutputStream *part_payload_out = NULL;
       gs_unref_object GConverterOutputStream *part_payload_compressor = NULL;
-      gs_unref_object GConverter *zlib_compressor = NULL;
+      gs_unref_object GConverter *compressor = NULL;
       gs_unref_variant GVariant *delta_part_content = NULL;
       gs_unref_variant GVariant *delta_part = NULL;
       gs_unref_variant GVariant *delta_part_header = NULL;
@@ -390,11 +393,11 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
                                           ot_gvariant_new_ay_bytes (operations_b));
       g_variant_ref_sink (delta_part_content);
 
-      /* Hardcode gzip for now */
-      zlib_compressor = (GConverter*)g_zlib_compressor_new (G_ZLIB_COMPRESSOR_FORMAT_RAW, 9);
+      /* Hardcode xz for now */
+      compressor = (GConverter*)_ostree_lzma_compressor_new (NULL);
       part_payload_in = ot_variant_read (delta_part_content);
       part_payload_out = (GMemoryOutputStream*)g_memory_output_stream_new (NULL, 0, g_realloc, g_free);
-      part_payload_compressor = (GConverterOutputStream*)g_converter_output_stream_new ((GOutputStream*)part_payload_out, zlib_compressor);
+      part_payload_compressor = (GConverterOutputStream*)g_converter_output_stream_new ((GOutputStream*)part_payload_out, compressor);
 
       if (0 > g_output_stream_splice ((GOutputStream*)part_payload_compressor, part_payload_in,
                                       G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET | G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE,
@@ -403,7 +406,7 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
 
       /* FIXME - avoid duplicating memory here */
       delta_part = g_variant_new ("(y@ay)",
-                                  (guint8)'g',
+                                  (guint8)'x',
                                   ot_gvariant_new_ay_bytes (g_memory_output_stream_steal_as_bytes (part_payload_out)));
 
       if (!gs_file_open_in_tmpdir (self->tmp_dir, 0644,
