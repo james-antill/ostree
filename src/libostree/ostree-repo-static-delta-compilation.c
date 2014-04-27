@@ -41,6 +41,7 @@ typedef struct {
   GPtrArray *parts;
   GPtrArray *fallback_objects;
   guint64 loose_compressed_size;
+  guint64 max_usize_bytes;
 } OstreeStaticDeltaBuilder;
 
 static void
@@ -93,6 +94,83 @@ objtype_checksum_array_new (GPtrArray *objects)
   return g_byte_array_free_to_bytes (ret);
 }
 
+static gboolean
+process_one_object (OstreeRepo                       *repo,
+                    OstreeStaticDeltaBuilder         *builder,
+                    OstreeStaticDeltaPartBuilder    **current_part_val,
+                    const char                       *checksum,
+                    OstreeObjectType                  objtype,
+                    GCancellable                     *cancellable,
+                    GError                          **error)
+{
+  gboolean ret = FALSE;
+  guint64 content_size;
+  gsize object_payload_start;
+  gs_unref_object GInputStream *content_stream = NULL;
+  gsize bytes_read;
+  const guint readlen = 4096;
+  guint64 compressed_size;
+  OstreeStaticDeltaPartBuilder *current_part = *current_part_val;
+
+  if (!ostree_repo_load_object_stream (repo, objtype, checksum,
+                                       &content_stream, &content_size,
+                                       cancellable, error))
+    goto out;
+  
+  /* Check to see if this delta is maximum size */
+  if (current_part->objects->len > 0 &&
+      current_part->payload->len + content_size > builder->max_usize_bytes)
+    {
+      *current_part_val = current_part = allocate_part (builder);
+    } 
+
+  if (!ostree_repo_query_object_storage_size (repo, objtype, checksum,
+                                              &compressed_size,
+                                              cancellable, error))
+    goto out;
+  builder->loose_compressed_size += compressed_size;
+
+  current_part->uncompressed_size += content_size;
+
+  g_ptr_array_add (current_part->objects, ostree_object_name_serialize (checksum, objtype));
+
+  object_payload_start = current_part->payload->len;
+
+  while (TRUE)
+    {
+      gsize empty_space;
+
+      empty_space = current_part->payload->allocated_len - current_part->payload->len;
+      if (empty_space < readlen)
+        {
+          gsize origlen;
+          origlen = current_part->payload->len;
+          g_string_set_size (current_part->payload, current_part->payload->allocated_len + (readlen - empty_space));
+          current_part->payload->len = origlen;
+        }
+
+      if (!g_input_stream_read_all (content_stream,
+                                    current_part->payload->str + current_part->payload->len,
+                                    readlen,
+                                    &bytes_read,
+                                    cancellable, error))
+        goto out;
+      if (bytes_read == 0)
+        break;
+          
+      current_part->payload->len += bytes_read;
+    }
+      
+  g_string_append_c (current_part->operations, (gchar)OSTREE_STATIC_DELTA_OP_WRITE);
+  _ostree_write_varuint64 (current_part->operations, object_payload_start);
+  _ostree_write_varuint64 (current_part->operations, content_size);
+  g_string_append_c (current_part->operations, (gchar)OSTREE_STATIC_DELTA_OP_CLOSE);
+
+  ret = TRUE;
+ out:
+  return ret;
+}
+
 static gboolean 
 generate_delta_lowlatency (OstreeRepo                       *repo,
                            const char                       *from,
@@ -104,6 +182,7 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
   gboolean ret = FALSE;
   GHashTableIter hashiter;
   gpointer key, value;
+  guint i;
   OstreeStaticDeltaPartBuilder *current_part = NULL;
   gs_unref_object GFile *root_from = NULL;
   gs_unref_object GFile *root_to = NULL;
@@ -112,7 +191,10 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
   gs_unref_ptrarray GPtrArray *added = NULL;
   gs_unref_hashtable GHashTable *to_reachable_objects = NULL;
   gs_unref_hashtable GHashTable *from_reachable_objects = NULL;
-  gs_unref_hashtable GHashTable *new_reachable_objects = NULL;
+  gs_unref_hashtable GHashTable *new_reachable_metadata = NULL;
+  gs_unref_hashtable GHashTable *new_reachable_content = NULL;
+  gs_unref_hashtable GHashTable *modified_content_objects = NULL;
+  gs_unref_hashtable GHashTable *content_object_to_size = NULL;
 
   if (!ostree_repo_read_commit (repo, from, &root_from, NULL,
                                 cancellable, error))
@@ -131,6 +213,17 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
                          cancellable, error))
     goto out;
 
+  modified_content_objects = g_hash_table_new_full (ostree_hash_object_name, g_variant_equal,
+                                                    NULL,
+                                                    (GDestroyNotify) g_variant_unref);
+  for (i = 0; i < modified->len; i++)
+    {
+      OstreeDiffItem *diffitem = modified->pdata[i];
+      GVariant *objname = ostree_object_name_serialize (diffitem->target_checksum,
+                                                        OSTREE_OBJECT_TYPE_FILE);
+      g_hash_table_add (modified_content_objects, objname);
+    }
+
   if (!ostree_repo_traverse_commit (repo, from, -1, &from_reachable_objects,
                                     cancellable, error))
     goto out;
@@ -139,108 +232,114 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
                                     cancellable, error))
     goto out;
 
-  new_reachable_objects = ostree_repo_traverse_new_reachable ();
+  new_reachable_metadata = ostree_repo_traverse_new_reachable ();
+  new_reachable_content = ostree_repo_traverse_new_reachable ();
 
   g_hash_table_iter_init (&hashiter, to_reachable_objects);
   while (g_hash_table_iter_next (&hashiter, &key, &value))
     {
       GVariant *serialized_key = key;
+      const char *checksum;
+      OstreeObjectType objtype;
 
       if (g_hash_table_contains (from_reachable_objects, serialized_key))
         continue;
 
-      g_hash_table_insert (new_reachable_objects, g_variant_ref (serialized_key), serialized_key);
+      ostree_object_name_deserialize (serialized_key, &checksum, &objtype);
+
+      g_variant_ref (serialized_key);
+      if (OSTREE_OBJECT_TYPE_IS_META (objtype))
+        g_hash_table_add (new_reachable_metadata, serialized_key);
+      else
+        g_hash_table_add (new_reachable_content, serialized_key);
     }
   
-  g_printerr ("modified: %u removed: %u added: %u; total %u new reachable objects\n",
-              modified->len, removed->len, added->len, 
-              g_hash_table_size (new_reachable_objects));
+  g_printerr ("modified: %u removed: %u added: %u\n",
+              modified->len, removed->len, added->len);
+  g_printerr ("new reachable: metadata=%u content=%u\n",
+              g_hash_table_size (new_reachable_metadata),
+              g_hash_table_size (new_reachable_content));
 
-  current_part = allocate_part (builder);
-
-  g_hash_table_iter_init (&hashiter, new_reachable_objects);
+  /* Scan for large objects, so we can fall back to plain HTTP-based
+   * fetch.  In the future this should come after an rsync-style
+   * rolling delta check for modified files.
+   */
+  g_hash_table_iter_init (&hashiter, new_reachable_content);
   while (g_hash_table_iter_next (&hashiter, &key, &value))
     {
       GVariant *serialized_key = key;
       const char *checksum;
       OstreeObjectType objtype;
-      guint64 content_size;
-      gsize object_payload_start;
-      gs_unref_object GInputStream *content_stream = NULL;
-      gsize bytes_read;
-      const guint readlen = 4096;
       guint64 compressed_size;
+      guint64 uncompressed_size;
+      gboolean fallback = FALSE;
 
       ostree_object_name_deserialize (serialized_key, &checksum, &objtype);
 
-      if (!ostree_repo_load_object_stream (repo, objtype, checksum,
-                                           &content_stream, &content_size,
-                                           cancellable, error))
-        goto out;
-
-      /* Fall back to plain HTTP-based fetch for large objects;
-       * in the future we should try an rsync-style rolling checksum
-       * against a previous version, if any.
+      /* First, do a cheap stat() on the *compressed* size - if that's
+       * larger than the max uncompressed size of a delta part, then
+       * clearly uncompressed will be larger.
        */
-      if (content_size > OSTREE_STATIC_DELTA_PART_MAX_SIZE_BYTES)
-        {
-          g_printerr ("fallback for %s\n",
-                      ostree_object_to_string (checksum, objtype));
-          g_ptr_array_add (builder->fallback_objects, 
-                           ostree_object_name_serialize (checksum, objtype));
-          continue;
-        }
-
-      /* Ensure we have at least one object per delta, even if a given
-       * object is larger.
-       */
-      if (current_part->objects->len > 0 &&
-          current_part->payload->len + content_size > OSTREE_STATIC_DELTA_PART_MAX_SIZE_BYTES)
-        {
-          current_part = allocate_part (builder);
-        } 
-
       if (!ostree_repo_query_object_storage_size (repo, objtype, checksum,
                                                   &compressed_size,
                                                   cancellable, error))
         goto out;
-      builder->loose_compressed_size += compressed_size;
 
-      current_part->uncompressed_size += content_size;
-
-      g_ptr_array_add (current_part->objects, g_variant_ref (serialized_key));
-
-      object_payload_start = current_part->payload->len;
-
-      while (TRUE)
+      if (compressed_size > builder->max_usize_bytes)
+        fallback = TRUE;
+      else
         {
-          gsize empty_space;
-
-          empty_space = current_part->payload->allocated_len - current_part->payload->len;
-          if (empty_space < readlen)
-            {
-              gsize origlen;
-              origlen = current_part->payload->len;
-              g_string_set_size (current_part->payload, current_part->payload->allocated_len + (readlen - empty_space));
-              current_part->payload->len = origlen;
-            }
-
-          if (!g_input_stream_read_all (content_stream,
-                                        current_part->payload->str + current_part->payload->len,
-                                        readlen,
-                                        &bytes_read,
-                                        cancellable, error))
+          /* Now query the uncompressed size. */
+          if (!ostree_repo_load_object_stream (repo, objtype, checksum,
+                                               NULL, &uncompressed_size,
+                                               cancellable, error))
             goto out;
-          if (bytes_read == 0)
-            break;
-          
-          current_part->payload->len += bytes_read;
+          if (uncompressed_size > builder->max_usize_bytes)
+            fallback = TRUE;
         }
-      
-      g_string_append_c (current_part->operations, (gchar)OSTREE_STATIC_DELTA_OP_WRITE);
-      _ostree_write_varuint64 (current_part->operations, object_payload_start);
-      _ostree_write_varuint64 (current_part->operations, content_size);
-      g_string_append_c (current_part->operations, (gchar)OSTREE_STATIC_DELTA_OP_CLOSE);
+  
+      if (fallback)
+        {
+          g_printerr ("fallback for %s\n",
+                      ostree_object_to_string (checksum, objtype));
+          g_ptr_array_add (builder->fallback_objects, 
+                           g_variant_ref (serialized_key));
+          g_hash_table_iter_remove (&hashiter);
+        }
+    }
+
+  current_part = allocate_part (builder);
+
+  /* Pack the metadata first */
+  g_hash_table_iter_init (&hashiter, new_reachable_metadata);
+  while (g_hash_table_iter_next (&hashiter, &key, &value))
+    {
+      GVariant *serialized_key = key;
+      const char *checksum;
+      OstreeObjectType objtype;
+
+      ostree_object_name_deserialize (serialized_key, &checksum, &objtype);
+
+      if (!process_one_object (repo, builder, &current_part,
+                               checksum, objtype,
+                               cancellable, error))
+        goto out;
+    }
+
+  /* Now content */
+  g_hash_table_iter_init (&hashiter, new_reachable_content);
+  while (g_hash_table_iter_next (&hashiter, &key, &value))
+    {
+      GVariant *serialized_key = key;
+      const char *checksum;
+      OstreeObjectType objtype;
+
+      ostree_object_name_deserialize (serialized_key, &checksum, &objtype);
+
+      if (!process_one_object (repo, builder, &current_part,
+                               checksum, objtype,
+                               cancellable, error))
+        goto out;
     }
 
   ret = TRUE;
@@ -320,6 +419,7 @@ get_fallback_headers (OstreeRepo               *self,
  * @from: ASCII SHA256 checksum of origin
  * @to: ASCII SHA256 checksum of target
  * @metadata: (allow-none): Optional metadata
+ * @params: (allow-none): Parameters, see below
  * @cancellable: Cancellable
  * @error: Error
  *
@@ -327,6 +427,11 @@ get_fallback_headers (OstreeRepo               *self,
  * the objects in @to.  This delta is an optimization over fetching
  * individual objects, and can be conveniently stored and applied
  * offline.
+ *
+ * The @params argument should be an a{sv}.  The following attributes
+ * are known:
+ *   - max-usize: u: Maximum size in megabytes of a delta part
+ *   - compression: y: Compression type: 0=none, x=lzma, g=gzip
  */
 gboolean
 ostree_repo_static_delta_generate (OstreeRepo                   *self,
@@ -334,12 +439,14 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
                                    const char                   *from,
                                    const char                   *to,
                                    GVariant                     *metadata,
+                                   GVariant                     *params,
                                    GCancellable                 *cancellable,
                                    GError                      **error)
 {
   gboolean ret = FALSE;
   OstreeStaticDeltaBuilder builder = { 0, };
   guint i;
+  guint max_usize;
   GVariant *metadata_source;
   guint64 total_compressed_size = 0;
   guint64 total_uncompressed_size = 0;
@@ -354,6 +461,10 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
 
   builder.parts = g_ptr_array_new_with_free_func ((GDestroyNotify)ostree_static_delta_part_builder_unref);
   builder.fallback_objects = g_ptr_array_new_with_free_func ((GDestroyNotify)g_variant_unref);
+
+  if (!g_variant_lookup (params, "max-usize", "u", &max_usize))
+    max_usize = 32;
+  builder.max_usize_bytes = ((guint64)max_usize) * 1000 * 1000;
 
   /* Ignore optimization flags */
   if (!generate_delta_lowlatency (self, from, to, &builder,
@@ -381,6 +492,7 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
       gs_unref_variant GVariant *delta_part_content = NULL;
       gs_unref_variant GVariant *delta_part = NULL;
       gs_unref_variant GVariant *delta_part_header = NULL;
+      guint8 compression_type_char;
 
       payload_b = g_string_free_to_bytes (part_builder->payload);
       part_builder->payload = NULL;
@@ -395,6 +507,7 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
 
       /* Hardcode xz for now */
       compressor = (GConverter*)_ostree_lzma_compressor_new (NULL);
+      compression_type_char = 'x';
       part_payload_in = ot_variant_read (delta_part_content);
       part_payload_out = (GMemoryOutputStream*)g_memory_output_stream_new (NULL, 0, g_realloc, g_free);
       part_payload_compressor = (GConverterOutputStream*)g_converter_output_stream_new ((GOutputStream*)part_payload_out, compressor);
@@ -406,7 +519,7 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
 
       /* FIXME - avoid duplicating memory here */
       delta_part = g_variant_new ("(y@ay)",
-                                  (guint8)'x',
+                                  compression_type_char,
                                   ot_gvariant_new_ay_bytes (g_memory_output_stream_steal_as_bytes (part_payload_out)));
 
       if (!gs_file_open_in_tmpdir (self->tmp_dir, 0644,
@@ -485,8 +598,10 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
     g_date_time_unref (now);
   }
 
-  g_printerr ("delta compressed=%" G_GUINT64_FORMAT " loose=%" G_GUINT64_FORMAT "\n",
-              total_compressed_size, builder.loose_compressed_size);
+  g_printerr ("delta uncompressed=%" G_GUINT64_FORMAT " compressed=%" G_GUINT64_FORMAT " loose=%" G_GUINT64_FORMAT "\n",
+              total_uncompressed_size,
+              total_compressed_size,
+              builder.loose_compressed_size);
 
   if (!ot_util_variant_save (descriptor_path, delta_descriptor, cancellable, error))
     goto out;
