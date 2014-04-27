@@ -74,7 +74,6 @@ objtype_checksum_array_new (GPtrArray *objects)
   guint i;
   GByteArray *ret = g_byte_array_new ();
 
-  g_assert (objects->len > 0);
   for (i = 0; i < objects->len; i++)
     {
       GVariant *serialized_key = objects->pdata[i];
@@ -259,6 +258,10 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
   g_printerr ("new reachable: metadata=%u content=%u\n",
               g_hash_table_size (new_reachable_metadata),
               g_hash_table_size (new_reachable_content));
+
+  /* We already ship the to commit in the superblock, don't ship it twice */
+  g_hash_table_remove (new_reachable_metadata,
+                       ostree_object_name_serialize (to, OSTREE_OBJECT_TYPE_COMMIT));
 
   /* Scan for large objects, so we can fall back to plain HTTP-based
    * fetch.  In the future this should come after an rsync-style
@@ -453,6 +456,7 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
   gs_unref_variant_builder GVariantBuilder *part_headers = NULL;
   gs_unref_ptrarray GPtrArray *part_tempfiles = NULL;
   gs_unref_variant GVariant *delta_descriptor = NULL;
+  gs_unref_variant GVariant *to_commit = NULL;
   gs_free char *descriptor_relpath = NULL;
   gs_unref_object GFile *descriptor_path = NULL;
   gs_unref_object GFile *descriptor_dir = NULL;
@@ -465,6 +469,10 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
   if (!g_variant_lookup (params, "max-usize", "u", &max_usize))
     max_usize = 32;
   builder.max_usize_bytes = ((guint64)max_usize) * 1000 * 1000;
+
+  if (!ostree_repo_load_variant (self, OSTREE_OBJECT_TYPE_COMMIT, to,
+                                 &to_commit, error))
+    goto out;
 
   /* Ignore optimization flags */
   if (!generate_delta_lowlatency (self, from, to, &builder,
@@ -585,13 +593,21 @@ ostree_repo_static_delta_generate (OstreeRepo                   *self,
                              cancellable, error))
     goto out;
 
+  /* Generate OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT */
   {
     GDateTime *now = g_date_time_new_now_utc ();
-    delta_descriptor = g_variant_new ("(@(a(ss)a(say))tay"
+    /* floating */ GVariant *from_csum_v =
+      ostree_checksum_to_bytes_v (from);
+    /* floating */ GVariant *to_csum_v =
+      ostree_checksum_to_bytes_v (to);
+    delta_descriptor = g_variant_new ("(@(a(ss)a(say))t@ay@ay@" OSTREE_COMMIT_GVARIANT_STRING "ay"
                                       "a" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT
                                       "@a" OSTREE_STATIC_DELTA_FALLBACK_FORMAT ")",
                                       metadata_source,
                                       GUINT64_TO_BE (g_date_time_to_unix (now)),
+                                      from_csum_v,
+                                      to_csum_v,
+                                      to_commit,
                                       g_variant_builder_new (G_VARIANT_TYPE ("ay")),
                                       part_headers,
                                       fallback_headers);

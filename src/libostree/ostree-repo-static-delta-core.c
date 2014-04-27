@@ -191,7 +191,35 @@ ostree_repo_static_delta_execute_offline (OstreeRepo                    *self,
                             FALSE, &meta, error))
     goto out;
 
-  fallback = g_variant_get_child_value (meta, 4);
+  /* Parsing OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT */
+
+  /* Write the to-commit object */
+  {
+    gs_unref_variant GVariant *to_csum_v = NULL;
+    gs_free char *to_checksum = NULL;
+    gs_unref_variant GVariant *to_commit = NULL;
+    gboolean have_to_commit;
+
+    to_csum_v = g_variant_get_child_value (meta, 3);
+    if (!ostree_validate_structureof_csum_v (to_csum_v, error))
+      goto out;
+    to_checksum = ostree_checksum_from_bytes_v (to_csum_v);
+
+    if (!ostree_repo_has_object (self, OSTREE_OBJECT_TYPE_COMMIT, to_checksum,
+                                 &have_to_commit, cancellable, error))
+      goto out;
+    
+    if (!have_to_commit)
+      {
+        to_commit = g_variant_get_child_value (meta, 4);
+        if (!ostree_repo_write_metadata (self, OSTREE_OBJECT_TYPE_COMMIT,
+                                         to_checksum, to_commit, NULL,
+                                         cancellable, error))
+          goto out;
+      }
+  }
+
+  fallback = g_variant_get_child_value (meta, 7);
   if (g_variant_n_children (fallback) > 0)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -199,7 +227,7 @@ ostree_repo_static_delta_execute_offline (OstreeRepo                    *self,
       goto out;
     }
 
-  headers = g_variant_get_child_value (meta, 3);
+  headers = g_variant_get_child_value (meta, 6);
   n = g_variant_n_children (headers);
   for (i = 0; i < n; i++)
     {

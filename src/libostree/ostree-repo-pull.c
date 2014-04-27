@@ -1240,8 +1240,8 @@ process_one_static_delta (OtPullData   *pull_data,
   guint i, n;
 
   /* Parsing OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT */
-  headers = g_variant_get_child_value (delta_superblock, 3);
-  fallback_objects = g_variant_get_child_value (delta_superblock, 4);
+  headers = g_variant_get_child_value (delta_superblock, 6);
+  fallback_objects = g_variant_get_child_value (delta_superblock, 7);
 
   /* First process the fallbacks */
   n = g_variant_n_children (fallback_objects);
@@ -1255,6 +1255,39 @@ process_one_static_delta (OtPullData   *pull_data,
                                               cancellable, error))
         goto out;
     }
+
+  /* Write the to-commit object */
+  {
+    gs_unref_variant GVariant *to_csum_v = NULL;
+    gs_free char *to_checksum = NULL;
+    gs_unref_variant GVariant *to_commit = NULL;
+    gboolean have_to_commit;
+
+    to_csum_v = g_variant_get_child_value (delta_superblock, 3);
+    if (!ostree_validate_structureof_csum_v (to_csum_v, error))
+      goto out;
+    to_checksum = ostree_checksum_from_bytes_v (to_csum_v);
+
+    if (!ostree_repo_has_object (pull_data->repo, OSTREE_OBJECT_TYPE_COMMIT, to_checksum,
+                                 &have_to_commit, cancellable, error))
+      goto out;
+    
+    if (!have_to_commit)
+      {
+        FetchObjectData *fetch_data = g_new0 (FetchObjectData, 1);
+        fetch_data->pull_data = pull_data;
+        fetch_data->object = ostree_object_name_serialize (to_checksum, OSTREE_OBJECT_TYPE_COMMIT);
+        fetch_data->is_detached_meta = FALSE;
+
+        to_commit = g_variant_get_child_value (delta_superblock, 4);
+
+        ostree_repo_write_metadata_async (pull_data->repo, OSTREE_OBJECT_TYPE_COMMIT, to_checksum,
+                                          to_commit,
+                                          pull_data->cancellable,
+                                          on_metadata_writed, fetch_data);
+        pull_data->n_outstanding_metadata_write_requests++;
+      }
+  }
 
   n = g_variant_n_children (headers);
   for (i = 0; i < n; i++)

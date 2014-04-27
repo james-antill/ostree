@@ -74,7 +74,10 @@ G_BEGIN_DECLS
  *
  * delta-descriptor:
  *   metadata: a{sv}
- *   timestamp: guint64
+ *   t: timestamp
+ *   from: ay checksum
+ *   to: ay checksum
+ *   commit: new commit object
  *   ARRAY[(csum from, csum to)]: ay
  *   ARRAY[delta-meta-entry]
  *   array[fallback]
@@ -93,7 +96,7 @@ G_BEGIN_DECLS
  * fetch individually - the compiler determined it wasn't worth
  * duplicating the space.
  */ 
-#define OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT "(a{sv}taya" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT "a" OSTREE_STATIC_DELTA_FALLBACK_FORMAT ")"
+#define OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT "(a{sv}tayay" OSTREE_COMMIT_GVARIANT_STRING "aya" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT "a" OSTREE_STATIC_DELTA_FALLBACK_FORMAT ")"
 
 gboolean _ostree_static_delta_part_validate (OstreeRepo     *repo,
                                              GFile          *part_path,
