@@ -24,6 +24,7 @@
 
 #include "ostree-repo-private.h"
 #include "ostree-repo-static-delta-private.h"
+#include "ostree-lzma-decompressor.h"
 #include "otutil.h"
 #include "ostree-varint.h"
 
@@ -204,17 +205,16 @@ _ostree_static_delta_part_execute_raw (OstreeRepo      *repo,
 }
 
 static gboolean
-zlib_uncompress_data (GBytes       *data,
-                      GBytes      **out_uncompressed,
-                      GCancellable *cancellable,
-                      GError      **error)
+decompress_all (GConverter   *converter,
+                GBytes       *data,
+                GBytes      **out_uncompressed,
+                GCancellable *cancellable,
+                GError      **error)
 {
   gboolean ret = FALSE;
   gs_unref_object GMemoryInputStream *memin = (GMemoryInputStream*)g_memory_input_stream_new_from_bytes (data);
   gs_unref_object GMemoryOutputStream *memout = (GMemoryOutputStream*)g_memory_output_stream_new (NULL, 0, g_realloc, g_free);
-  gs_unref_object GConverter *zlib_decomp =
-    (GConverter*) g_zlib_decompressor_new (G_ZLIB_COMPRESSOR_FORMAT_RAW);
-  gs_unref_object GInputStream *convin = g_converter_input_stream_new ((GInputStream*)memin, zlib_decomp);
+  gs_unref_object GInputStream *convin = g_converter_input_stream_new ((GInputStream*)memin, converter);
 
   if (0 > g_output_stream_splice ((GOutputStream*)memout, convin,
                                   G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE |
@@ -264,8 +264,21 @@ _ostree_static_delta_part_execute (OstreeRepo      *repo,
       break;
     case 'g':
       {
-        if (!zlib_uncompress_data (part_payload_bytes, &payload_data,
-                                   cancellable, error))
+        gs_unref_object GConverter *decomp =
+          (GConverter*) g_zlib_decompressor_new (G_ZLIB_COMPRESSOR_FORMAT_RAW);
+
+        if (!decompress_all (decomp, part_payload_bytes, &payload_data,
+                             cancellable, error))
+          goto out;
+      }
+      break;
+    case 'x':
+      {
+        gs_unref_object GConverter *decomp =
+          (GConverter*) _ostree_lzma_decompressor_new ();
+
+        if (!decompress_all (decomp, part_payload_bytes, &payload_data,
+                             cancellable, error))
           goto out;
       }
       break;
