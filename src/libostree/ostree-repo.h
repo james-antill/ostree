@@ -452,6 +452,7 @@ gboolean ostree_repo_static_delta_generate (OstreeRepo                   *self,
                                             const char                   *from,
                                             const char                   *to,
                                             GVariant                     *metadata,
+                                            GVariant                     *params,
                                             GCancellable                 *cancellable,
                                             GError                      **error);
 

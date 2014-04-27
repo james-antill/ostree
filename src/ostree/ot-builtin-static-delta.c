@@ -29,6 +29,7 @@ static char *opt_to_rev;
 static char *opt_apply;
 static char **opt_key_ids;
 static char *opt_gpg_homedir;
+static char *opt_max_usize;
 
 static GOptionEntry options[] = {
   { "from", 0, 0, G_OPTION_ARG_STRING, &opt_from_rev, "Create delta from revision REV", "REV" },
@@ -36,6 +37,7 @@ static GOptionEntry options[] = {
   { "apply", 0, 0, G_OPTION_ARG_FILENAME, &opt_apply, "Apply delta from PATH", "PATH" },
   { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_key_ids, "GPG Key ID to sign the delta with", "key-id"},
   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, "GPG Homedir to use when looking for keyrings", "homedir"},
+  { "max-usize", 'u', 0, G_OPTION_ARG_STRING, &opt_max_usize, "Maximum uncompressed size in megabytes", NULL},
   { NULL }
 };
 
@@ -94,6 +96,7 @@ ostree_builtin_static_delta (int argc, char **argv, OstreeRepo *repo, GCancellab
           gs_free char *from_resolved = NULL;
           gs_free char *to_resolved = NULL;
           gs_free char *from_parent_str = NULL;
+          gs_unref_variant_builder GVariantBuilder *parambuilder = NULL;
 
           if (opt_from_rev == NULL)
             {
@@ -110,11 +113,17 @@ ostree_builtin_static_delta (int argc, char **argv, OstreeRepo *repo, GCancellab
           if (!ostree_repo_resolve_rev (repo, opt_to_rev, FALSE, &to_resolved, error))
             goto out;
 
+          parambuilder = g_variant_builder_new (G_VARIANT_TYPE ("a{sv}"));
+          if (opt_max_usize)
+            g_variant_builder_add (parambuilder, "{sv}",
+                                   "max-usize", g_variant_new_uint32 (g_ascii_strtoull (opt_max_usize, NULL, 10)));
+
           g_print ("Generating static delta:\n");
           g_print ("  From: %s\n", from_resolved);
           g_print ("  To:   %s\n", to_resolved);
           if (!ostree_repo_static_delta_generate (repo, OSTREE_STATIC_DELTA_GENERATE_OPT_MAJOR,
                                                   from_resolved, to_resolved, NULL,
+                                                  g_variant_builder_end (parambuilder),
                                                   cancellable, error))
             goto out;
 
