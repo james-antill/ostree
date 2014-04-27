@@ -273,38 +273,23 @@ generate_delta_lowlatency (OstreeRepo                       *repo,
       GVariant *serialized_key = key;
       const char *checksum;
       OstreeObjectType objtype;
-      guint64 compressed_size;
       guint64 uncompressed_size;
       gboolean fallback = FALSE;
 
       ostree_object_name_deserialize (serialized_key, &checksum, &objtype);
 
-      /* First, do a cheap stat() on the *compressed* size - if that's
-       * larger than the max uncompressed size of a delta part, then
-       * clearly uncompressed will be larger.
-       */
-      if (!ostree_repo_query_object_storage_size (repo, objtype, checksum,
-                                                  &compressed_size,
-                                                  cancellable, error))
+      if (!ostree_repo_load_object_stream (repo, objtype, checksum,
+                                           NULL, &uncompressed_size,
+                                           cancellable, error))
         goto out;
-
-      if (compressed_size > builder->max_usize_bytes)
+      if (uncompressed_size > builder->max_usize_bytes)
         fallback = TRUE;
-      else
-        {
-          /* Now query the uncompressed size. */
-          if (!ostree_repo_load_object_stream (repo, objtype, checksum,
-                                               NULL, &uncompressed_size,
-                                               cancellable, error))
-            goto out;
-          if (uncompressed_size > builder->max_usize_bytes)
-            fallback = TRUE;
-        }
   
       if (fallback)
         {
-          g_printerr ("fallback for %s\n",
-                      ostree_object_to_string (checksum, objtype));
+          gs_free char *size = g_format_size (uncompressed_size);
+          g_printerr ("fallback for %s (%s)\n",
+                      ostree_object_to_string (checksum, objtype), size);
           g_ptr_array_add (builder->fallback_objects, 
                            g_variant_ref (serialized_key));
           g_hash_table_iter_remove (&hashiter);
