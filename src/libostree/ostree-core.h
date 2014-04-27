@@ -102,6 +102,7 @@ typedef enum {
  * ay - Root tree contents
  * ay - Root tree metadata
  */
+#define OSTREE_COMMIT_GVARIANT_STRING "(a{sv}aya(say)sstayay)"
 #define OSTREE_COMMIT_GVARIANT_FORMAT G_VARIANT_TYPE ("(a{sv}aya(say)sstayay)")
 
 /**
