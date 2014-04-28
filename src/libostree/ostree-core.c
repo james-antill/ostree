@@ -1775,7 +1775,7 @@ GVariant *
 _ostree_detached_metadata_append_gpg_sig (GVariant   *existing_metadata,
                                           GBytes     *signature_bytes)
 {
-  GVariantBuilder *builder;
+  GVariantBuilder *builder = NULL;
   gs_unref_variant GVariant *signaturedata = NULL;
   gs_unref_variant_builder GVariantBuilder *signature_builder = NULL;
 
