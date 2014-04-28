@@ -43,6 +43,7 @@ typedef struct {
   const guint8   *output_target;
   GFile          *output_tmp_path;
   GOutputStream  *output_tmp_stream;
+  GInputStream   *content_in_stream;
   const guint8   *input_target_csum;
 
   const guint8   *payload_data;
@@ -99,10 +100,22 @@ open_output_target_csum (OstreeRepo                  *repo,
 
   state->output_objtype = (OstreeObjectType) *objcsum;
   state->output_target = objcsum + 1;
-  if (!gs_file_open_in_tmpdir (repo->tmp_dir, 0644,
-                               &state->output_tmp_path, &state->output_tmp_stream,
-                               cancellable, error))
-    goto out;
+  if (OSTREE_OBJECT_TYPE_IS_META (state->output_objtype))
+    {
+      if (!gs_file_open_in_tmpdir (repo->tmp_dir, 0644,
+                                   &state->output_tmp_path, &state->output_tmp_stream,
+                                   cancellable, error))
+        goto out;
+    }
+  else
+    {
+      int pipefds[2];
+      
+      if (!g_unix_open_pipe (pipefds, FD_CLOEXEC, error))
+        goto out;
+
+      state->output_tmp_stream = g_unix_output_stream_new (pipefds[1], TRUE);
+    }
 
   ret = TRUE;
  out:

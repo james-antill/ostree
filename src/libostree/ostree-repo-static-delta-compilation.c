@@ -38,7 +38,8 @@ typedef struct {
 } OstreeStaticDeltaPartBuilder;
 
 typedef struct {
-  GPtrArray *parts;
+  GPtrArray *meta_parts;
+  GPtrArray *content_parts;
   GPtrArray *fallback_objects;
   guint64 loose_compressed_size;
   guint64 max_usize_bytes;

@@ -30,25 +30,47 @@ G_BEGIN_DECLS
 #define OSTREE_STATIC_DELTA_OBJTYPE_CSUM_LEN 33
 
 /**
- * OSTREE_STATIC_DELTA_PART_PAYLOAD_FORMAT:
+ * OSTREE_STATIC_DELTA_PART_META_PAYLOAD_FORMAT:
+ *
+ *   y  compression type (0: none, 'z': zlib)
+ *   ---
+ *   aay objects
+ */
+#define OSTREE_STATIC_DELTA_PART_META_PAYLOAD_FORMAT "(aay)"
+
+/**
+ * OSTREE_STATIC_DELTA_PART_CONTENT_PAYLOAD_FORMAT:
  *
  *   y  compression type (0: none, 'z': zlib)
  *   ---
  *   ay data source
- *   ay operations
+ *   ay (varint size, operations*)
  */
-#define OSTREE_STATIC_DELTA_PART_PAYLOAD_FORMAT "(ayay)"
+#define OSTREE_STATIC_DELTA_PART_CONTENT_PAYLOAD_FORMAT "(ayay)"
 
 /**
  * OSTREE_STATIC_DELTA_META_ENTRY_FORMAT:
  *
  *   ay checksum
- *   guint64 size:   Total size of delta (sum of parts)
+ *   guint64 size:   Compressed delta size
  *   guint64 usize:   Uncompressed size of resulting objects on disk
  *   ARRAY[(guint8 objtype, csum object)]
  *
  * The checksum is of the delta payload, and each entry in the array
  * represents an OSTree object which will be created by the deltapart.
+ */
+
+#define OSTREE_STATIC_DELTA_META_ENTRY_FORMAT "(ayttay)"
+
+/**
+ * OSTREE_STATIC_DELTA_CONTENT_ENTRY_FORMAT:
+ *
+ *   ay checksum
+ *   guint64 size:   Compressed delta size
+ *   guint64 usize:   Uncompressed size of resulting objects on disk
+ *   ARRAY[csum]
+ *
+ * Like the meta entry, except without an object type.
  */
 
 #define OSTREE_STATIC_DELTA_META_ENTRY_FORMAT "(ayttay)"
@@ -80,6 +102,7 @@ G_BEGIN_DECLS
  *   commit: new commit object
  *   ARRAY[(csum from, csum to)]: ay
  *   ARRAY[delta-meta-entry]
+ *   ARRAY[delta-content-entry]
  *   array[fallback]
  *
  * The metadata would include things like a version number, as well as
@@ -90,13 +113,20 @@ G_BEGIN_DECLS
  * recursion mechanism that would potentially allow saving significant
  * storage space on the server.
  *
- * The heart of the static delta: the array of delta parts.
+ * The heart of the static delta: two arrays of delta parts, one for
+ * metadata, one for content.
  *
  * Finally, we have the fallback array, which is the set of objects to
  * fetch individually - the compiler determined it wasn't worth
  * duplicating the space.
  */ 
-#define OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT "(a{sv}tayay" OSTREE_COMMIT_GVARIANT_STRING "aya" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT "a" OSTREE_STATIC_DELTA_FALLBACK_FORMAT ")"
+#define OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT "(a{sv}tayay" \
+  OSTREE_COMMIT_GVARIANT_STRING \
+  "ay"                                      \
+  "a" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT \
+  "a" OSTREE_STATIC_DELTA_CONTENT_ENTRY_FORMAT \
+  "a" OSTREE_STATIC_DELTA_FALLBACK_FORMAT \
+  ")"
 
 gboolean _ostree_static_delta_part_validate (OstreeRepo     *repo,
                                              GFile          *part_path,
