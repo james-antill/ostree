@@ -160,6 +160,11 @@ process_one_object (OstreeRepo                       *repo,
       current_part->payload->len += bytes_read;
     }
       
+  /* A little lame here to duplicate the content size - but if in the
+   * future we do rsync-style rolling checksums, then we'll have
+   * multiple write calls.
+   */
+  _ostree_write_varuint64 (current_part->operations, content_size);
   g_string_append_c (current_part->operations, (gchar)OSTREE_STATIC_DELTA_OP_WRITE);
   _ostree_write_varuint64 (current_part->operations, object_payload_start);
   _ostree_write_varuint64 (current_part->operations, content_size);

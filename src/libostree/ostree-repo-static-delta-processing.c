@@ -38,6 +38,9 @@ typedef struct {
 
   const guint8   *opdata;
   guint           oplen;
+  
+  gboolean        object_start;
+  guint64         object_size;
 
   OstreeObjectType output_objtype;
   const guint8   *output_target;
@@ -144,6 +147,23 @@ _ostree_static_delta_part_validate (OstreeRepo     *repo,
   return ret;
 }
 
+static gboolean
+read_varuint64 (StaticDeltaExecutionState  *state,
+                guint64                    *out_value,
+                GError                    **error)
+{
+  gsize bytes_read;
+  if (!_ostree_read_varuint64 (state->opdata, state->oplen, out_value, &bytes_read))
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "Unexpected EOF reading varint");
+      return FALSE;
+    }
+  state->opdata += bytes_read;
+  state->oplen -= bytes_read;
+  return TRUE;
+}
+
 gboolean
 _ostree_static_delta_part_execute_raw (OstreeRepo      *repo,
                                        GVariant        *objects,
@@ -178,10 +198,20 @@ _ostree_static_delta_part_execute_raw (OstreeRepo      *repo,
 
   state->oplen = g_variant_n_children (ops);
   state->opdata = g_variant_get_data (ops);
+  state->object_start = TRUE;
   while (state->oplen > 0)
     {
-      guint8 opcode = state->opdata[0];
+      guint8 opcode;
       OstreeStaticDeltaOperation *op;
+
+      if (state->object_start)
+        {
+          if (!read_varuint64 (state, &state->object_size, error))
+            goto out;
+          state->object_start = FALSE;
+        }
+
+      opcode = state->opdata[0];
 
       if (G_UNLIKELY (opcode == 0 || opcode >= G_N_ELEMENTS (op_dispatch_table)))
         {
@@ -376,23 +406,6 @@ _ostree_static_delta_part_execute_finish (OstreeRepo      *repo,
 }
 
 static gboolean
-read_varuint64 (StaticDeltaExecutionState  *state,
-                guint64                    *out_value,
-                GError                    **error)
-{
-  gsize bytes_read;
-  if (!_ostree_read_varuint64 (state->opdata, state->oplen, out_value, &bytes_read))
-    {
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                           "Unexpected EOF reading varint");
-      return FALSE;
-    }
-  state->opdata += bytes_read;
-  state->oplen -= bytes_read;
-  return TRUE;
-}
-
-static gboolean
 validate_ofs (StaticDeltaExecutionState  *state,
               guint64                     offset,
               guint64                     length,
@@ -558,6 +571,8 @@ dispatch_close (OstreeRepo                 *repo,
 
   state->output_target = NULL;
   g_clear_object (&state->output_tmp_path);
+
+  state->object_start = TRUE;
 
   state->checksum_index++;
   if (state->checksum_index < state->n_checksums)
