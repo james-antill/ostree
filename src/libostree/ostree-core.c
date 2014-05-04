@@ -1321,18 +1321,31 @@ _ostree_get_relative_object_path (const char         *checksum,
   return g_string_free (path, FALSE);
 }
 
+static char *
+get_delta_path (const char *from,
+                const char *to,
+                const char *target)
+{
+  char prefix[3];
+  prefix[0] = from[0];
+  prefix[1] = from[1];
+  prefix[2] = '\0';
+  from += 2;
+  return g_strconcat ("deltas/", prefix, "/", from, "-", to, "/", target, NULL);
+}
+
 char *
 _ostree_get_relative_static_delta_path (const char        *from,
                                         const char        *to)
 {
-  return g_strdup_printf ("deltas/%s-%s/superblock", from, to);
+  return get_delta_path (from, to, "superblock");
 }
 
 char *
 _ostree_get_relative_static_delta_detachedmeta_path (const char        *from,
                                                      const char        *to)
 {
-  return g_strdup_printf ("deltas/%s-%s/meta", from, to);
+  return get_delta_path (from, to, "meta");
 }
 
 char *
@@ -1340,7 +1353,8 @@ _ostree_get_relative_static_delta_part_path (const char        *from,
                                              const char        *to,
                                              guint              i)
 {
-  return g_strdup_printf ("deltas/%s-%s/%u", from, to, i);
+  gs_free char *partstr = g_strdup_printf ("%u", i);
+  return get_delta_path (from, to, partstr);
 }
 
 /*
