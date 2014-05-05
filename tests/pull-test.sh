@@ -60,7 +60,7 @@ ${CMD_PREFIX} ostree --repo=repo pull origin main
 ${CMD_PREFIX} ostree --repo=repo fsck
 # Generate a delta from old to current, even though we aren't going to
 # use it.
-ostree --repo=ostree-srv/gnomerepo static-delta main
+ostree --repo=ostree-srv/gnomerepo static-delta generate main
 
 rm main-files -rf
 ostree --repo=ostree-srv/gnomerepo checkout main main-files
@@ -72,7 +72,7 @@ ostree --repo=${test_tmpdir}/ostree-srv/gnomerepo commit -b main -s 'static delt
 cd ..
 rm main-files -rf
 # Generate delta that we'll use
-ostree --repo=ostree-srv/gnomerepo static-delta main
+ostree --repo=ostree-srv/gnomerepo static-delta generate main
 
 cd ${test_tmpdir}
 ${CMD_PREFIX} ostree --repo=repo pull origin main
@@ -97,7 +97,7 @@ echo "further modified file for static deltas" > baz/cow
 ostree --repo=${test_tmpdir}/ostree-srv/gnomerepo commit -b main -s '2nd static delta test'
 cd ..
 rm main-files -rf
-ostree --repo=ostree-srv/gnomerepo static-delta main
+ostree --repo=ostree-srv/gnomerepo static-delta generate main
 
 cd ${test_tmpdir}
 ${CMD_PREFIX} ostree --repo=repo pull origin main
