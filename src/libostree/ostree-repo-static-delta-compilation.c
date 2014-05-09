@@ -29,6 +29,9 @@
 #include "ostree-diff.h"
 #include "otutil.h"
 #include "ostree-varint.h"
+#include "bupsplit.h"
+
+#define ROLLSUM_BLOB_MAX (8192*4)
 
 typedef struct {
   guint64 uncompressed_size;
