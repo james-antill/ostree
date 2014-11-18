@@ -45,8 +45,8 @@ cat_one_file (GFile         *f,
   if (!in)
     goto out;
 
-  if (!g_output_stream_splice (stdout_stream, in, G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE,
-                               cancellable, error))
+  if (g_output_stream_splice (stdout_stream, in, G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE,
+                              cancellable, error) < 0)
     goto out;
 
   ret = TRUE;
